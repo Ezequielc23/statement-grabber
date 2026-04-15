@@ -1,16 +1,9 @@
 // Background service worker for Statement Grabber
-//
-// chrome.downloads.download `filename` is relative to the browser's download directory (Chrome
-// defaults to the user's Downloads folder). Paths with subdirectories such as
-// `statements/capital-one/account_2024-01.pdf` create those folders under Downloads automatically;
-// Chrome does not require you to create `statements/` or `statements/capital-one/` beforehand.
 
-// Sanitize filename - remove invalid characters
 function sanitizeFilename(name) {
   return name.replace(/[<>:"/\\|?*]/g, "_").replace(/\s+/g, "-").toLowerCase();
 }
 
-// Build path: Downloads/statements/{bank-folder}/{account}_{date}.{ext}
 function buildFilename(bankFolder, accountName, date, format) {
   const account = sanitizeFilename(accountName || "statement");
   const dateStr = sanitizeFilename(date || "unknown-date");
@@ -18,16 +11,10 @@ function buildFilename(bankFolder, accountName, date, format) {
   return `statements/${bankFolder}/${account}_${dateStr}.${ext}`;
 }
 
-// Download a single statement
 function downloadOne(url, filename) {
   return new Promise((resolve, reject) => {
     chrome.downloads.download(
-      {
-        url: url,
-        filename: filename,
-        saveAs: false,
-        conflictAction: "uniquify",
-      },
+      { url, filename, saveAs: false, conflictAction: "uniquify" },
       (downloadId) => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
@@ -70,11 +57,54 @@ function downloadOne(url, filename) {
   });
 }
 
-// Handle messages from popup
+// --- Download redirect for click-based banks (e.g. Chime) ---
+// When a bank uses JS buttons instead of <a href> links, the browser
+// initiates the download itself. We intercept via onDeterminingFilename
+// to reroute the file into statements/{bankFolder}/.
+let redirectFolder = null;
+let redirectActive = false;
+
+function startRedirect(folder) {
+  redirectFolder = sanitizeFilename(folder || "unknown-bank");
+  redirectActive = true;
+}
+
+function stopRedirect() {
+  redirectActive = false;
+  redirectFolder = null;
+}
+
+// Always-registered listener; only acts when redirect is active
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  if (!redirectActive || !redirectFolder) {
+    suggest();
+    return;
+  }
+  // item.filename is the suggested filename (e.g. "Chime-Checking-Statement-March-2026.pdf")
+  const originalName = item.filename || "statement.pdf";
+  suggest({
+    filename: `statements/${redirectFolder}/${originalName}`,
+    conflictAction: "uniquify",
+  });
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+
+  if (msg.action === "startRedirect") {
+    startRedirect(msg.folder);
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (msg.action === "stopRedirect") {
+    stopRedirect();
+    sendResponse({ ok: true });
+    return;
+  }
+
+  // URL-based batch download (for banks with real links)
   if (msg.action === "downloadStatements") {
     const { statements } = msg;
-    // Prefer detector slug (e.g. "capital-one"); fall back to sanitized display bank name
     const bankFolder = sanitizeFilename(msg.folder || msg.bank || "unknown-bank");
 
     (async () => {
@@ -92,26 +122,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         try {
           await downloadOne(stmt.url, filename);
           completed++;
-
-          chrome.runtime
-            .sendMessage({
-              action: "downloadProgress",
-              completed,
-              total,
-              filename,
-            })
-            .catch(() => {});
+          chrome.runtime.sendMessage({
+            action: "downloadProgress",
+            completed, total, filename,
+          }).catch(() => {});
         } catch (err) {
           completed++;
-          chrome.runtime
-            .sendMessage({
-              action: "downloadError",
-              completed,
-              total,
-              filename,
-              error: err.message,
-            })
-            .catch(() => {});
+          chrome.runtime.sendMessage({
+            action: "downloadError",
+            completed, total, filename,
+            error: err.message,
+          }).catch(() => {});
         }
 
         if (completed < total) {
@@ -119,13 +140,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
       }
 
-      chrome.runtime
-        .sendMessage({
-          action: "downloadComplete",
-          completed: total,
-          bankFolder,
-        })
-        .catch(() => {});
+      chrome.runtime.sendMessage({
+        action: "downloadComplete",
+        completed: total,
+        bankFolder,
+      }).catch(() => {});
     })();
   }
 });

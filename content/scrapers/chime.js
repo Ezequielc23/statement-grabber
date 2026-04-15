@@ -10,162 +10,165 @@
   };
 
   function extractDate(text) {
-    if (!text) return null;
-    const s = text.trim();
-
-    let m = s.match(/(\w{3,9})\s+(\d{1,2}),?\s+(\d{4})/i);
-    if (m) {
-      const mo = MONTHS[m[1].toLowerCase()];
-      if (mo) return `${m[3]}-${mo}`;
-    }
-
-    m = s.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
-    if (m) {
-      const yr = m[3].length === 2 ? "20" + m[3] : m[3];
-      return `${yr}-${m[1].padStart(2, "0")}`;
-    }
-
-    m = s.match(/(\d{4})-(\d{2})/);
-    if (m) return `${m[1]}-${m[2]}`;
-
-    m = s.match(/(\w{3,9})\s+(\d{4})/i);
+    const m = text.match(/(\w{3,9})\s+(\d{4})/i);
     if (m) {
       const mo = MONTHS[m[1].toLowerCase()];
       if (mo) return `${m[2]}-${mo}`;
     }
-
     return null;
   }
 
-  function extractAccountType(rowText) {
-    const lower = (rowText || "").toLowerCase();
-    if (lower.includes("checking account")) return "Checking";
-    if (lower.includes("savings account")) return "Savings";
-    if (lower.includes("credit account")) return "Credit";
+  function extractAccountType(text) {
+    const lower = text.toLowerCase();
     if (lower.includes("checking")) return "Checking";
     if (lower.includes("savings")) return "Savings";
     if (lower.includes("credit")) return "Credit";
     return "Account";
   }
 
+  // Get the button's accessible name from any source
+  function getButtonLabel(btn) {
+    return btn.getAttribute("aria-label")
+      || btn.getAttribute("title")
+      || btn.innerText?.trim()
+      || btn.textContent?.trim()
+      || "";
+  }
+
   function sleep(ms) {
     return new Promise(r => setTimeout(r, ms));
   }
 
-  function findOlderButton() {
-    const allClickables = document.querySelectorAll("a, button, [role='button'], [role='link']");
-    for (const el of allClickables) {
-      const text = (el.textContent || "").trim().toLowerCase();
-      if (text === "older" || text === "next" || text === "next page" || text === "load more") {
-        if (el.disabled || el.getAttribute("aria-disabled") === "true" ||
-            el.classList.contains("disabled") || el.style.pointerEvents === "none") {
-          return null;
-        }
-        return el;
-      }
-    }
-    for (const el of allClickables) {
-      const aria = (el.getAttribute("aria-label") || "").toLowerCase();
-      if (aria === "older" || aria === "next page" || aria === "older statements") {
+  function findNextPageButton() {
+    for (const el of document.querySelectorAll("button, [role='button']")) {
+      const label = getButtonLabel(el).toLowerCase();
+      if (label === "show next page" || label === "older" || label === "next page" || label === "next") {
         if (!el.disabled && el.getAttribute("aria-disabled") !== "true") return el;
       }
     }
     return null;
   }
 
-  function getPaginationInfo() {
-    const bodyText = document.body.innerText || "";
-    const m = bodyText.match(/(\d+)\s+to\s+(\d+)\s+of\s+(\d+)/i);
-    if (m) {
-      return { from: parseInt(m[1]), to: parseInt(m[2]), total: parseInt(m[3]) };
+  function findPrevPageButton() {
+    for (const el of document.querySelectorAll("button, [role='button']")) {
+      const label = getButtonLabel(el).toLowerCase();
+      if (label === "show previous page" || label === "newer" || label === "previous page" || label === "previous") {
+        if (!el.disabled && el.getAttribute("aria-disabled") !== "true") return el;
+      }
     }
     return null;
   }
 
+  // Scan the page by finding <li> elements that contain statement info + a button
   function scanCurrentPage(seen) {
     const statements = [];
 
-    // Strategy 1: PDF href links
-    document.querySelectorAll([
-      'a[href*="statement"][href*=".pdf"]',
-      'a[href*="/statements/"]',
-      'a[href*="/documents/"]',
-      'a[href*="download"][href*="statement"]',
-      'a[href*=".pdf"]',
-      'a[data-testid*="statement"]',
-      'a[data-testid*="download"]',
-    ].join(", ")).forEach(a => {
-      const url = a.href;
-      if (!url || seen.has(url)) return;
-      seen.add(url);
-      const row = a.closest("tr, li, [role='row'], [class*='row'], [class*='item'], div");
-      const rowText = row ? row.textContent.trim() : a.textContent.trim();
-      const acct = extractAccountType(rowText);
+    // Strategy 1: Find list items whose text matches "Month Year ... account statement PDF"
+    document.querySelectorAll("li, [role='listitem']").forEach(li => {
+      const text = (li.textContent || "").trim();
+      if (!/account\s+statement/i.test(text)) return;
+      if (!/pdf/i.test(text)) return;
+
+      const date = extractDate(text);
+      if (!date) return;
+
+      const key = `${extractAccountType(text)}_${date}`;
+      if (seen.has(key)) return;
+
+      // Find the clickable button inside this list item
+      const btn = li.querySelector("button, [role='button']");
+      if (!btn) return;
+
+      seen.add(key);
       statements.push({
-        url,
-        date: extractDate(rowText) || "unknown",
-        accountName: acct,
+        // Store enough info to re-find this button later
+        accountName: extractAccountType(text),
+        date,
         format: "pdf",
-        label: rowText.substring(0, 80),
+        label: `${extractAccountType(text)} statement ${date}`,
+        clickDownload: true,
+        // Unique selector to re-find: the nth statement button in the list
+        rowText: text.substring(0, 100),
       });
     });
 
-    // Strategy 2: Statement rows with embedded links
-    document.querySelectorAll([
-      '[data-testid*="statement"]',
-      '[class*="statement-row"]',
-      '[class*="StatementRow"]',
-      '[class*="statement-item"]',
-      '[class*="document-row"]',
-      'tr',
-      'li',
-    ].join(", ")).forEach(row => {
-      const rowText = (row.textContent || "").trim();
-      if (!/statement|pdf/i.test(rowText)) return;
-      if (!extractDate(rowText)) return;
+    // Strategy 2: Find buttons whose accessible label contains "Download...statement...PDF"
+    document.querySelectorAll("button, [role='button']").forEach(btn => {
+      const label = getButtonLabel(btn);
+      if (!/download.*statement.*pdf/i.test(label)) return;
 
-      const link = row.querySelector('a[href], button[data-href], button[data-url]');
-      if (link) {
-        const url = link.href || link.getAttribute("data-href") || link.getAttribute("data-url") || "";
-        if (url && !seen.has(url)) {
-          seen.add(url);
-          const acct = extractAccountType(rowText);
-          statements.push({
-            url,
-            date: extractDate(rowText) || "unknown",
-            accountName: acct,
-            format: "pdf",
-            label: rowText.substring(0, 80),
-          });
-        }
-      }
-    });
-
-    // Strategy 3: Clickable "PDF" elements
-    document.querySelectorAll("a, button, [role='button'], [role='link']").forEach(el => {
-      const text = (el.textContent || "").trim();
-      if (text.toUpperCase() !== "PDF" && !/download.*pdf/i.test(text)) return;
-
-      const url = el.href || el.getAttribute("data-href") || el.getAttribute("data-url") || "";
-      if (!url || seen.has(url)) return;
-
-      const row = el.closest("tr, li, [role='row'], [class*='row'], div[class]");
-      const rowText = row ? row.textContent.trim() : "";
-      const date = extractDate(rowText);
+      const date = extractDate(label);
       if (!date) return;
 
-      seen.add(url);
-      const acct = extractAccountType(rowText);
+      const acct = extractAccountType(label);
+      const key = `${acct}_${date}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+
       statements.push({
-        url,
-        date,
+        buttonLabel: label,
         accountName: acct,
+        date,
         format: "pdf",
         label: `${acct} statement ${date}`,
+        clickDownload: true,
+        rowText: label.substring(0, 100),
       });
     });
 
     return statements;
+  }
+
+  // Get a signature of current page content for change detection
+  function getPageSignature() {
+    const items = [];
+    document.querySelectorAll("li, [role='listitem']").forEach(li => {
+      const text = (li.textContent || "").trim();
+      if (/account\s+statement/i.test(text) && /pdf/i.test(text)) {
+        items.push(text.substring(0, 50));
+      }
+    });
+    return items.join("|");
+  }
+
+  async function waitForPageChange(beforeSig, maxWait = 10000) {
+    const start = Date.now();
+    while (Date.now() - start < maxWait) {
+      const current = getPageSignature();
+      if (current !== beforeSig && current.length > 0) return true;
+      await sleep(400);
+    }
+    return false;
+  }
+
+  // Find and click the download button for a given statement
+  function clickStatementButton(accountName, date) {
+    // Try to find by list item text content
+    const items = document.querySelectorAll("li, [role='listitem']");
+    for (const li of items) {
+      const text = (li.textContent || "").trim();
+      if (!/account\s+statement/i.test(text)) continue;
+      if (!text.toLowerCase().includes(accountName.toLowerCase())) continue;
+      if (!extractDate(text) || extractDate(text) !== date) continue;
+
+      const btn = li.querySelector("button, [role='button']");
+      if (btn) {
+        btn.click();
+        return true;
+      }
+    }
+
+    // Fallback: find button by accessible label
+    for (const btn of document.querySelectorAll("button, [role='button']")) {
+      const label = getButtonLabel(btn);
+      if (/download.*statement.*pdf/i.test(label) &&
+          label.toLowerCase().includes(accountName.toLowerCase()) &&
+          extractDate(label) === date) {
+        btn.click();
+        return true;
+      }
+    }
+    return false;
   }
 
   const scraper = {
@@ -173,38 +176,100 @@
       const seen = new Set();
       let allStatements = [];
 
-      allStatements = allStatements.concat(scanCurrentPage(seen));
+      try {
+        allStatements = scanCurrentPage(seen);
 
-      const pageInfo = getPaginationInfo();
-      if (pageInfo && pageInfo.to < pageInfo.total) {
-        let maxPages = Math.ceil(pageInfo.total / (pageInfo.to - pageInfo.from + 1)) + 1;
-        let pagesVisited = 1;
+        let pages = 1;
+        while (pages < 30) {
+          const nextBtn = findNextPageButton();
+          if (!nextBtn) break;
 
-        while (pagesVisited < maxPages && pagesVisited < 20) {
-          const olderBtn = findOlderButton();
-          if (!olderBtn) break;
-
-          olderBtn.click();
+          const beforeSig = getPageSignature();
+          nextBtn.click();
           await sleep(2000);
+          const changed = await waitForPageChange(beforeSig);
+          if (!changed) break;
 
-          const newStatements = scanCurrentPage(seen);
-          if (newStatements.length === 0) {
-            await sleep(2000);
-            const retry = scanCurrentPage(seen);
-            allStatements = allStatements.concat(retry);
-            if (retry.length === 0) break;
-          } else {
-            allStatements = allStatements.concat(newStatements);
-          }
-
-          pagesVisited++;
-
-          const newPageInfo = getPaginationInfo();
-          if (newPageInfo && newPageInfo.to >= newPageInfo.total) break;
+          const found = scanCurrentPage(seen);
+          allStatements = allStatements.concat(found);
+          if (found.length === 0) break;
+          pages++;
         }
+      } catch (e) {
+        console.error("Statement Grabber: scan error", e);
       }
 
       return allStatements;
+    },
+
+    // Bulk download: navigate through all pages clicking matching buttons
+    clickDownloadBulk: async (buttonLabels, progressCallback) => {
+      // Build a set of {accountName, date} pairs to download
+      const wanted = new Map();
+      for (const lbl of buttonLabels) {
+        // Parse from the label we stored: "Checking statement 2026-03" format
+        // Or from the buttonLabel/rowText
+        const dateMatch = lbl.match(/(\d{4}-\d{2})/);
+        const acctMatch = lbl.match(/(Checking|Savings|Credit)/i);
+        if (dateMatch && acctMatch) {
+          const key = `${acctMatch[1]}_${dateMatch[1]}`;
+          wanted.set(key, { accountName: acctMatch[1], date: dateMatch[1], label: lbl });
+        }
+      }
+
+      if (wanted.size === 0) return 0;
+
+      // Go to first page
+      let prevBtn = findPrevPageButton();
+      while (prevBtn) {
+        const sig = getPageSignature();
+        prevBtn.click();
+        await sleep(1500);
+        await waitForPageChange(sig);
+        prevBtn = findPrevPageButton();
+      }
+
+      let totalClicked = 0;
+      let pages = 0;
+
+      while (wanted.size > 0 && pages < 30) {
+        // Click all matching statements on this page
+        for (const [key, info] of [...wanted.entries()]) {
+          const clicked = clickStatementButton(info.accountName, info.date);
+          if (clicked) {
+            totalClicked++;
+            wanted.delete(key);
+            if (progressCallback) progressCallback(info.label);
+            await sleep(2000); // generous delay so Chime's server can respond
+          }
+        }
+
+        const nextBtn = findNextPageButton();
+        if (!nextBtn) break;
+
+        const beforeSig = getPageSignature();
+        nextBtn.click();
+        await sleep(2000);
+        const changed = await waitForPageChange(beforeSig);
+        if (!changed) break;
+        pages++;
+      }
+
+      // Check last page
+      for (const [key, info] of [...wanted.entries()]) {
+        const clicked = clickStatementButton(info.accountName, info.date);
+        if (clicked) {
+          totalClicked++;
+          wanted.delete(key);
+          if (progressCallback) progressCallback(info.label);
+          await sleep(2000);
+        }
+      }
+
+      // Wait for the last downloads to finish before signaling completion
+      await sleep(5000);
+
+      return totalClicked;
     },
   };
 

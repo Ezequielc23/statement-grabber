@@ -226,12 +226,35 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     addLog(`Starting download of ${checked.length} statements...`, "info");
 
-    chrome.runtime.sendMessage({
-      action: "downloadStatements",
-      bank: currentBank,
-      folder: currentFolder,
-      statements: checked,
-    });
+    // Check if these are click-based downloads (buttons, not links)
+    const clickBased = checked.some(s => s.clickDownload);
+
+    if (clickBased) {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.id) {
+        // Tell background to redirect downloads into statements/{bank}/
+        await chrome.runtime.sendMessage({
+          action: "startRedirect",
+          folder: currentFolder,
+        });
+
+        chrome.tabs.sendMessage(tab.id, {
+          action: "clickDownload",
+          items: checked.map(s => ({
+            accountName: s.accountName,
+            date: s.date,
+            label: s.label,
+          })),
+        }).catch(() => {});
+      }
+    } else {
+      chrome.runtime.sendMessage({
+        action: "downloadStatements",
+        bank: currentBank,
+        folder: currentFolder,
+        statements: checked,
+      });
+    }
   });
 
   // Listen for progress updates from background
@@ -244,6 +267,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     } else if (msg.action === "downloadError") {
       addLog(`✗ ${msg.filename}: ${msg.error}`, "error");
     } else if (msg.action === "downloadComplete") {
+      // Wait for any in-flight downloads to finish before stopping redirect
+      setTimeout(() => {
+        chrome.runtime.sendMessage({ action: "stopRedirect" }).catch(() => {});
+      }, 10000);
+
       progressBar.style.width = "100%";
       progressText.textContent = `Done! ${msg.completed} files downloaded.`;
       addLog(`All done! Files saved to Downloads/statements/${msg.bankFolder}/`, "success");

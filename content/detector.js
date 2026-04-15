@@ -198,16 +198,20 @@
       const scraper = scrapers[bank.folder];
       if (scraper && typeof scraper.findStatements === "function") {
         Promise.resolve(scraper.findStatements()).then(statements => {
-          if (!statements || statements.length === 0) {
+          // Only fall back to generic scraper if the bank scraper found nothing
+          // AND the bank doesn't use click-based downloads
+          if ((!statements || statements.length === 0) &&
+              typeof scraper.clickDownloadBulk !== "function") {
             statements = fallbackScraper();
           }
           sendResponse({
             bank: bank.name,
             icon: bank.icon,
             folder: bank.folder,
-            statements: statements,
+            statements: statements || [],
           });
-        }).catch(() => {
+        }).catch((err) => {
+          console.error("Statement Grabber: scraper error", err);
           sendResponse({
             bank: bank.name,
             icon: bank.icon,
@@ -222,6 +226,38 @@
           folder: bank.folder,
           statements: fallbackScraper(),
         });
+      }
+      return true;
+    }
+
+    // Click-based download for banks that use JS buttons instead of links
+    if (msg.action === "clickDownload") {
+      const bank = detectBank();
+      if (!bank) { sendResponse({ ok: false }); return true; }
+
+      const scraper = scrapers[bank.folder];
+      if (scraper && typeof scraper.clickDownloadBulk === "function") {
+        const items = msg.items || [];
+        const labels = items.map(s => `${s.accountName} statement ${s.date}`);
+        let completed = 0;
+        scraper.clickDownloadBulk(labels, (clickedLabel) => {
+          completed++;
+          chrome.runtime.sendMessage({
+            action: "downloadProgress",
+            completed,
+            total: items.length,
+            filename: clickedLabel.substring(0, 60),
+          }).catch(() => {});
+        }).then((total) => {
+          chrome.runtime.sendMessage({
+            action: "downloadComplete",
+            completed: total,
+            bankFolder: bank.folder,
+          }).catch(() => {});
+          sendResponse({ ok: true, completed: total });
+        });
+      } else {
+        sendResponse({ ok: false });
       }
       return true;
     }
