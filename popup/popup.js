@@ -4,6 +4,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const bankIcon = document.getElementById("bank-icon");
   const bankName = document.getElementById("bank-name");
   const stmtCount = document.getElementById("statement-count");
+  const accountFilter = document.getElementById("account-filter");
+  const accountButtons = document.getElementById("account-buttons");
   const stmtsContainer = document.getElementById("statements-container");
   const stmtList = document.getElementById("statement-list");
   const actions = document.getElementById("actions");
@@ -19,8 +21,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   const selectedCount = document.getElementById("selected-count");
 
   let statements = [];
+  let filteredStatements = [];
   let currentBank = null;
   let currentFolder = null;
+  let activeAccounts = new Set(); // which account filters are active
 
   // Quick links
   document.querySelectorAll(".bank-link").forEach(link => {
@@ -29,6 +33,76 @@ document.addEventListener("DOMContentLoaded", async () => {
       chrome.tabs.create({ url: link.dataset.url });
     });
   });
+
+  function getUniqueAccounts(stmts) {
+    const counts = {};
+    stmts.forEach(s => {
+      const name = s.accountName || "Unknown";
+      counts[name] = (counts[name] || 0) + 1;
+    });
+    return counts;
+  }
+
+  function applyFilter() {
+    if (activeAccounts.size === 0) {
+      filteredStatements = [...statements];
+    } else {
+      filteredStatements = statements.filter(s => activeAccounts.has(s.accountName || "Unknown"));
+    }
+    renderStatements(filteredStatements);
+    stmtCount.textContent = filteredStatements.length;
+  }
+
+  function renderAccountFilter(stmts) {
+    const accounts = getUniqueAccounts(stmts);
+    const names = Object.keys(accounts).sort();
+
+    if (names.length <= 1) {
+      accountFilter.classList.add("hidden");
+      return;
+    }
+
+    accountButtons.innerHTML = "";
+
+    // "All" button
+    const allBtn = document.createElement("button");
+    allBtn.className = "account-btn active";
+    allBtn.innerHTML = `All <span class="acct-count">${stmts.length}</span>`;
+    allBtn.addEventListener("click", () => {
+      activeAccounts.clear();
+      accountButtons.querySelectorAll(".account-btn").forEach(b => b.classList.remove("active"));
+      allBtn.classList.add("active");
+      applyFilter();
+    });
+    accountButtons.appendChild(allBtn);
+
+    // Per-account buttons
+    names.forEach(name => {
+      const btn = document.createElement("button");
+      btn.className = "account-btn";
+      btn.innerHTML = `${name} <span class="acct-count">${accounts[name]}</span>`;
+      btn.addEventListener("click", () => {
+        // Toggle this account
+        if (activeAccounts.has(name)) {
+          activeAccounts.delete(name);
+          btn.classList.remove("active");
+        } else {
+          activeAccounts.add(name);
+          btn.classList.add("active");
+        }
+        // Deactivate "All" if any specific account is selected
+        if (activeAccounts.size > 0) {
+          allBtn.classList.remove("active");
+        } else {
+          allBtn.classList.add("active");
+        }
+        applyFilter();
+      });
+      accountButtons.appendChild(btn);
+    });
+
+    accountFilter.classList.remove("hidden");
+  }
 
   function updateSelectedCount() {
     const checked = stmtList.querySelectorAll("input:checked").length;
@@ -45,7 +119,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         <input type="checkbox" checked data-index="${i}">
         <div class="stmt-info">
           <div class="stmt-name">${s.accountName || "Statement"} - ${s.date || "Unknown"}</div>
-          <div class="stmt-date">${s.url ? new URL(s.url, "https://example.com").pathname.split("/").pop() || "" : ""}</div>
+          <div class="stmt-date">${s.label || ""}</div>
         </div>
         <span class="stmt-format">${s.format || "pdf"}</span>
       `;
@@ -74,22 +148,24 @@ document.addEventListener("DOMContentLoaded", async () => {
     bankStatus.textContent = "Scanning page...";
     bankStatus.className = "status detecting";
     bankInfo.classList.add("hidden");
+    accountFilter.classList.add("hidden");
     stmtsContainer.classList.add("hidden");
     actions.classList.add("hidden");
     noBank.classList.add("hidden");
+    activeAccounts.clear();
 
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) throw new Error("No active tab");
 
-      // Send scan request -- scrapers with pagination may take a while
-      bankStatus.textContent = "Scanning for statements (may take a moment if paginated)...";
+      bankStatus.textContent = "Scanning for statements (paginated banks take longer)...";
       const response = await chrome.tabs.sendMessage(tab.id, { action: "scan" }).catch(() => null);
 
       if (response && response.bank) {
         currentBank = response.bank;
         currentFolder = response.folder || null;
         statements = response.statements || [];
+        filteredStatements = [...statements];
 
         bankStatus.textContent = `Connected to ${response.bank}`;
         bankStatus.className = "status found";
@@ -100,7 +176,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         bankInfo.classList.remove("hidden");
 
         if (statements.length > 0) {
-          renderStatements(statements);
+          renderAccountFilter(statements);
+          renderStatements(filteredStatements);
           stmtsContainer.classList.remove("hidden");
           actions.classList.remove("hidden");
         } else {
@@ -121,7 +198,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  // Check all toggle
+  // Check all toggle (only affects visible/filtered statements)
   checkAll.addEventListener("change", () => {
     stmtList.querySelectorAll("input").forEach(cb => { cb.checked = checkAll.checked; });
     updateSelectedCount();
@@ -137,7 +214,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Download button
   downloadBtn.addEventListener("click", async () => {
-    const checked = [...stmtList.querySelectorAll("input:checked")].map(cb => statements[cb.dataset.index]);
+    const checked = [...stmtList.querySelectorAll("input:checked")].map(cb => filteredStatements[cb.dataset.index]);
     if (checked.length === 0) return;
 
     actions.classList.add("hidden");
@@ -149,7 +226,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     addLog(`Starting download of ${checked.length} statements...`, "info");
 
-    // Send to background worker
     chrome.runtime.sendMessage({
       action: "downloadStatements",
       bank: currentBank,
