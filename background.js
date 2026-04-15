@@ -8,7 +8,7 @@ function buildFilename(bankFolder, accountName, date, format) {
   const account = sanitizeFilename(accountName || "statement");
   const dateStr = sanitizeFilename(date || "unknown-date");
   const ext = (format || "pdf").toLowerCase();
-  return `statements/${bankFolder}/${account}_${dateStr}.${ext}`;
+  return `statements/${bankFolder}/${account}/${account}_${dateStr}.${ext}`;
 }
 
 function downloadOne(url, filename) {
@@ -62,16 +62,19 @@ function downloadOne(url, filename) {
 // initiates the download itself. We intercept via onDeterminingFilename
 // to reroute the file into statements/{bankFolder}/.
 let redirectFolder = null;
+let redirectAccount = null;
 let redirectActive = false;
 
-function startRedirect(folder) {
+function startRedirect(folder, account) {
   redirectFolder = sanitizeFilename(folder || "unknown-bank");
+  redirectAccount = account ? sanitizeFilename(account) : null;
   redirectActive = true;
 }
 
 function stopRedirect() {
   redirectActive = false;
   redirectFolder = null;
+  redirectAccount = null;
 }
 
 // Always-registered listener; only acts when redirect is active
@@ -80,18 +83,25 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     suggest();
     return;
   }
-  // item.filename is the suggested filename (e.g. "Chime-Checking-Statement-March-2026.pdf")
   const originalName = item.filename || "statement.pdf";
-  suggest({
-    filename: `statements/${redirectFolder}/${originalName}`,
-    conflictAction: "uniquify",
-  });
+  // Try to detect account from the filename (e.g. "Chime-Checking-Statement-...")
+  let acctFolder = redirectAccount;
+  if (!acctFolder) {
+    const lower = originalName.toLowerCase();
+    if (lower.includes("checking")) acctFolder = "checking";
+    else if (lower.includes("savings")) acctFolder = "savings";
+    else if (lower.includes("credit")) acctFolder = "credit";
+  }
+  const path = acctFolder
+    ? `statements/${redirectFolder}/${acctFolder}/${originalName}`
+    : `statements/${redirectFolder}/${originalName}`;
+  suggest({ filename: path, conflictAction: "uniquify" });
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.action === "startRedirect") {
-    startRedirect(msg.folder);
+    startRedirect(msg.folder, msg.account);
     sendResponse({ ok: true });
     return;
   }

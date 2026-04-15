@@ -274,7 +274,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       progressBar.style.width = "100%";
       progressText.textContent = `Done! ${msg.completed} files downloaded.`;
-      addLog(`All done! Files saved to Downloads/statements/${msg.bankFolder}/`, "success");
+      addLog(`All done! Files saved to Downloads/statements/${msg.bankFolder}/[account]/`, "success");
       actions.classList.remove("hidden");
       downloadBtn.textContent = "✓ Complete";
       downloadBtn.disabled = true;
