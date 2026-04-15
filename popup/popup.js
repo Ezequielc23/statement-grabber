@@ -71,7 +71,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   async function scanPage() {
-    bankStatus.textContent = "Detecting bank...";
+    bankStatus.textContent = "Scanning page...";
     bankStatus.className = "status detecting";
     bankInfo.classList.add("hidden");
     stmtsContainer.classList.add("hidden");
@@ -82,7 +82,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) throw new Error("No active tab");
 
-      // Inject the detector + scrapers if not already there, then ask for results
+      // Send scan request -- scrapers with pagination may take a while
+      bankStatus.textContent = "Scanning for statements (may take a moment if paginated)...";
       const response = await chrome.tabs.sendMessage(tab.id, { action: "scan" }).catch(() => null);
 
       if (response && response.bank) {

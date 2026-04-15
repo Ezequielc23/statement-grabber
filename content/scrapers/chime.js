@@ -38,7 +38,8 @@
   }
 
   function getAccountName() {
-    // Chime shows account type (Spending, Savings) in tabs or headers
+    // Chime's statements page shows "Checking" or "Savings" as the active account
+    // Based on the user's page: "Accounts > Checking" shown in the account selector
     const selectors = [
       '[data-testid="account-name"]',
       '[class*="account-name"]',
@@ -53,115 +54,198 @@
       const el = document.querySelector(sel);
       if (el) {
         const t = el.textContent.trim();
-        if (t) return t;
+        if (t && t.length < 50) return t;
       }
     }
+
+    // Look for "Checking" or "Savings" text near the statements area
+    const bodyText = document.body.innerText || "";
+    if (/Accounts\s*\n?\s*Checking/i.test(bodyText)) return "Checking";
+    if (/Accounts\s*\n?\s*Savings/i.test(bodyText)) return "Savings";
+
     const title = document.title || "";
     const titleMatch = title.match(/^(.+?)[\s\-|]+Chime/i);
     if (titleMatch) return titleMatch[1].trim();
     return "Chime Account";
   }
 
+  function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+  }
+
+  // Find the "Older" / next-page button on Chime's paginated statements
+  function findOlderButton() {
+    // Chime shows "Older" as a pagination link/button
+    const allClickables = document.querySelectorAll("a, button, [role='button'], [role='link']");
+    for (const el of allClickables) {
+      const text = (el.textContent || "").trim().toLowerCase();
+      if (text === "older" || text === "next" || text === "next page" || text === "load more") {
+        // Make sure it's not disabled
+        if (el.disabled || el.getAttribute("aria-disabled") === "true" ||
+            el.classList.contains("disabled") || el.style.pointerEvents === "none") {
+          return null;
+        }
+        return el;
+      }
+    }
+    // Also check aria-label
+    for (const el of allClickables) {
+      const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+      if (aria === "older" || aria === "next page" || aria === "older statements") {
+        if (!el.disabled && el.getAttribute("aria-disabled") !== "true") return el;
+      }
+    }
+    return null;
+  }
+
+  // Parse the pagination info like "1 to 10 of 36"
+  function getPaginationInfo() {
+    const bodyText = document.body.innerText || "";
+    const m = bodyText.match(/(\d+)\s+to\s+(\d+)\s+of\s+(\d+)/i);
+    if (m) {
+      return { from: parseInt(m[1]), to: parseInt(m[2]), total: parseInt(m[3]) };
+    }
+    return null;
+  }
+
+  // Scan the current page for statement rows
+  function scanCurrentPage(accountName, seen) {
+    const statements = [];
+
+    // Chime's statement rows: each row has "Month Year", "Checking account statement", "PDF"
+    // The PDF text/link is the download trigger
+    // Look for rows that contain a date + "statement" + a clickable PDF element
+
+    // Strategy 1: Find all links with PDF hrefs
+    document.querySelectorAll([
+      'a[href*="statement"][href*=".pdf"]',
+      'a[href*="/statements/"]',
+      'a[href*="/documents/"]',
+      'a[href*="download"][href*="statement"]',
+      'a[href*=".pdf"]',
+      'a[data-testid*="statement"]',
+      'a[data-testid*="download"]',
+    ].join(", ")).forEach(a => {
+      const url = a.href;
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      const row = a.closest("tr, li, [role='row'], [class*='row'], [class*='item'], div");
+      const rowText = row ? row.textContent.trim() : a.textContent.trim();
+      statements.push({
+        url,
+        date: extractDate(rowText) || "unknown",
+        accountName,
+        format: "pdf",
+        label: rowText.substring(0, 80),
+      });
+    });
+
+    // Strategy 2: Statement rows - look for rows containing both a date and "PDF" or "statement"
+    document.querySelectorAll([
+      '[data-testid*="statement"]',
+      '[class*="statement-row"]',
+      '[class*="StatementRow"]',
+      '[class*="statement-item"]',
+      '[class*="document-row"]',
+      'tr',
+      'li',
+    ].join(", ")).forEach(row => {
+      const rowText = (row.textContent || "").trim();
+      // Must contain something that looks like a date and "statement" or "PDF"
+      if (!/statement|pdf/i.test(rowText)) return;
+      if (!extractDate(rowText)) return;
+
+      const link = row.querySelector('a[href], button[data-href], button[data-url]');
+      if (link) {
+        const url = link.href || link.getAttribute("data-href") || link.getAttribute("data-url") || "";
+        if (url && !seen.has(url)) {
+          seen.add(url);
+          statements.push({
+            url,
+            date: extractDate(rowText) || "unknown",
+            accountName,
+            format: "pdf",
+            label: rowText.substring(0, 80),
+          });
+        }
+      }
+    });
+
+    // Strategy 3: Look for clickable "PDF" elements that trigger downloads
+    // Chime may show "PDF" as a clickable link/button per row
+    document.querySelectorAll("a, button, [role='button'], [role='link']").forEach(el => {
+      const text = (el.textContent || "").trim();
+      if (text.toUpperCase() !== "PDF" && !/download.*pdf/i.test(text)) return;
+
+      const url = el.href || el.getAttribute("data-href") || el.getAttribute("data-url") || "";
+      if (!url || seen.has(url)) return;
+
+      // Get date from the parent row
+      const row = el.closest("tr, li, [role='row'], [class*='row'], div[class]");
+      const rowText = row ? row.textContent.trim() : "";
+      const date = extractDate(rowText);
+      if (!date) return;
+
+      seen.add(url);
+      statements.push({
+        url,
+        date,
+        accountName,
+        format: "pdf",
+        label: `${accountName} statement ${date}`,
+      });
+    });
+
+    return statements;
+  }
+
   const scraper = {
     findStatements: async () => {
-      const statements = [];
-      const seen = new Set();
       const accountName = getAccountName();
+      const seen = new Set();
+      let allStatements = [];
 
-      // Strategy 1: Direct PDF statement links
-      // member.chime.com renders statement rows with download links
-      document.querySelectorAll([
-        'a[href*="statement"][href*=".pdf"]',
-        'a[href*="/statements/"][href*=".pdf"]',
-        'a[href*="/documents/"][href*=".pdf"]',
-        'a[data-testid*="statement"]',
-        'a[data-testid*="download"]',
-        'a[href*="download"][href*="statement"]',
-      ].join(", ")).forEach(a => {
-        const url = a.href;
-        if (!url || seen.has(url)) return;
-        seen.add(url);
-        const text = (a.textContent || "").trim() + " " + (a.getAttribute("aria-label") || "");
-        statements.push({
-          url, date: extractDate(text) || extractDate(url) || "unknown",
-          accountName, format: "pdf",
-          label: text.substring(0, 80).trim(),
-        });
-      });
+      // Scan the first page
+      allStatements = allStatements.concat(scanCurrentPage(accountName, seen));
 
-      // Strategy 2: Statement rows in Chime's list view
-      document.querySelectorAll([
-        '[data-testid*="statement-row"]',
-        '[data-testid*="statement-item"]',
-        '[class*="statement-row"]',
-        '[class*="StatementRow"]',
-        '[class*="statement-item"]',
-        '[class*="StatementItem"]',
-        '[class*="document-row"]',
-        '[class*="statements-list"] li',
-      ].join(", ")).forEach(row => {
-        const link = row.querySelector('a[href], button[data-href], button[data-url]');
-        if (!link) return;
-        const url = link.href || link.getAttribute("data-href") || link.getAttribute("data-url") || "";
-        if (!url || seen.has(url)) return;
-        seen.add(url);
-        const rowText = (row.textContent || "").trim();
-        statements.push({
-          url, date: extractDate(rowText) || "unknown",
-          accountName, format: "pdf",
-          label: rowText.substring(0, 80),
-        });
-      });
+      // Check if there's pagination
+      const pageInfo = getPaginationInfo();
+      if (pageInfo && pageInfo.to < pageInfo.total) {
+        // There are more pages -- auto-paginate through all of them
+        let maxPages = Math.ceil(pageInfo.total / (pageInfo.to - pageInfo.from + 1)) + 1;
+        let pagesVisited = 1;
 
-      // Strategy 3: Download/view buttons in statement cards
-      document.querySelectorAll([
-        'button[aria-label*="Download"]',
-        'button[aria-label*="View statement"]',
-        'button[data-testid*="download"]',
-        'button[data-testid*="view-statement"]',
-        '[role="link"][aria-label*="Statement"]',
-      ].join(", ")).forEach(btn => {
-        const url = btn.getAttribute("data-url") || btn.getAttribute("data-href") || btn.href || "";
-        if (!url || seen.has(url)) return;
-        seen.add(url);
-        const parentRow = btn.closest("li, tr, [class*='row'], [class*='card'], [class*='item']");
-        const text = parentRow ? parentRow.textContent.trim() : (btn.getAttribute("aria-label") || "");
-        statements.push({
-          url, date: extractDate(text) || "unknown",
-          accountName, format: "pdf",
-          label: text.substring(0, 80),
-        });
-      });
+        while (pagesVisited < maxPages && pagesVisited < 20) {
+          const olderBtn = findOlderButton();
+          if (!olderBtn) break;
 
-      // Strategy 4: Walk the statements section
-      const sectionSelectors = [
-        '[data-testid="statements-section"]',
-        '[data-testid="statements-list"]',
-        '[class*="statements-container"]',
-        '[class*="StatementsContainer"]',
-        '#statements',
-        'section[aria-label*="Statements"]',
-        '[class*="statements-page"]',
-        '[class*="document-list"]',
-      ];
-      for (const sel of sectionSelectors) {
-        const section = document.querySelector(sel);
-        if (!section) continue;
-        section.querySelectorAll("a[href]").forEach(a => {
-          const url = a.href;
-          if (!url || seen.has(url)) return;
-          seen.add(url);
-          const row = a.closest("li, tr, [role='listitem'], [class*='row'], [class*='item']");
-          const text = row ? row.textContent.trim() : a.textContent.trim();
-          statements.push({
-            url, date: extractDate(text) || "unknown",
-            accountName, format: "pdf",
-            label: text.substring(0, 80),
-          });
-        });
+          // Click "Older" to load next page
+          olderBtn.click();
+
+          // Wait for the page to update (Chime is a SPA, content changes in-place)
+          await sleep(2000);
+
+          // Scan the new page content
+          const newStatements = scanCurrentPage(accountName, seen);
+          if (newStatements.length === 0) {
+            // No new statements found, might still be loading -- wait a bit more
+            await sleep(2000);
+            const retry = scanCurrentPage(accountName, seen);
+            allStatements = allStatements.concat(retry);
+            if (retry.length === 0) break;
+          } else {
+            allStatements = allStatements.concat(newStatements);
+          }
+
+          pagesVisited++;
+
+          // Check updated pagination to see if we've reached the end
+          const newPageInfo = getPaginationInfo();
+          if (newPageInfo && newPageInfo.to >= newPageInfo.total) break;
+        }
       }
 
-      return statements;
+      return allStatements;
     },
   };
 

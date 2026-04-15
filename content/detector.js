@@ -58,6 +58,76 @@
     scrapers[folder] = scraper;
   };
 
+  // Shared pagination utility available to all scrapers
+  window.__pagination = {
+    // Find common "next page" / "older" / "load more" buttons
+    findNextButton: function() {
+      const keywords = ["older", "next", "next page", "load more", "show more", "view more"];
+      const allClickables = document.querySelectorAll("a, button, [role='button'], [role='link']");
+      for (const el of allClickables) {
+        const text = (el.textContent || "").trim().toLowerCase();
+        const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+        if (keywords.includes(text) || keywords.includes(aria)) {
+          if (!el.disabled && el.getAttribute("aria-disabled") !== "true" &&
+              !el.classList.contains("disabled")) {
+            return el;
+          }
+        }
+      }
+      return null;
+    },
+
+    // Parse "X to Y of Z" style pagination text
+    getPageInfo: function() {
+      const text = document.body.innerText || "";
+      const m = text.match(/(\d+)\s+to\s+(\d+)\s+of\s+(\d+)/i);
+      if (m) return { from: +m[1], to: +m[2], total: +m[3] };
+      const m2 = text.match(/showing\s+(\d+)\s*[-–]\s*(\d+)\s+of\s+(\d+)/i);
+      if (m2) return { from: +m2[1], to: +m2[2], total: +m2[3] };
+      return null;
+    },
+
+    sleep: function(ms) { return new Promise(r => setTimeout(r, ms)); },
+
+    // Auto-paginate: calls scanFn on each page, clicking "next" between pages
+    // scanFn(seen) should return an array of statements found on the current page
+    // Returns all statements across all pages
+    autoPageAll: async function(scanFn) {
+      const seen = new Set();
+      let all = scanFn(seen);
+
+      const info = this.getPageInfo();
+      if (!info || info.to >= info.total) return all;
+
+      let pages = 1;
+      const maxPages = Math.ceil(info.total / Math.max(info.to - info.from + 1, 1)) + 1;
+
+      while (pages < maxPages && pages < 30) {
+        const btn = this.findNextButton();
+        if (!btn) break;
+
+        btn.click();
+        await this.sleep(2000);
+
+        const found = scanFn(seen);
+        if (found.length === 0) {
+          await this.sleep(2000);
+          const retry = scanFn(seen);
+          all = all.concat(retry);
+          if (retry.length === 0) break;
+        } else {
+          all = all.concat(found);
+        }
+
+        pages++;
+        const newInfo = this.getPageInfo();
+        if (newInfo && newInfo.to >= newInfo.total) break;
+      }
+
+      return all;
+    },
+  };
+
   // Generic fallback scraper that finds PDF links on the page
   function fallbackScraper() {
     const links = [];
