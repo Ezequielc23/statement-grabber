@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "Statement Grabber",
+  "version": "1.0.0",
+  "description": "Batch-download bank statements with one click. Supports Capital One, AMEX, SoFi, Chime, Empower, and Credit One.",
+  "permissions": [
+    "activeTab",
+    "downloads",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.capitalone.com/*",
+    "*://*.americanexpress.com/*",
+    "*://*.sofi.com/*",
+    "*://*.chime.com/*",
+    "*://*.empower.com/*",
+    "*://*.empowerment.com/*",
+    "*://*.empower-retirement.com/*",
+    "*://*.creditonebank.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.capitalone.com/*",
+        "*://*.americanexpress.com/*",
+        "*://*.sofi.com/*",
+        "*://*.chime.com/*",
+        "*://*.empower.com/*",
+        "*://*.empowerment.com/*",
+        "*://*.empower-retirement.com/*",
+        "*://*.creditonebank.com/*"
+      ],
+      "js": [
+        "content/detector.js",
+        "content/scrapers/capital-one.js",
+        "content/scrapers/amex.js",
+        "content/scrapers/sofi.js",
+        "content/scrapers/chime.js",
+        "content/scrapers/empower.js",
+        "content/scrapers/credit-one.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <!-- header with icon and title -->
+  <div id="header">
+    <div class="title-row">
+      <span class="logo">$</span>
+      <h1>Statement Grabber</h1>
+    </div>
+    <div id="bank-status" class="status detecting">Detecting bank...</div>
+  </div>
+
+  <!-- detected bank info -->
+  <div id="bank-info" class="hidden">
+    <div class="bank-name-row">
+      <span id="bank-icon" class="bank-icon"></span>
+      <span id="bank-name" class="bank-name"></span>
+      <span id="statement-count" class="count-badge">0</span>
+    </div>
+  </div>
+
+  <!-- statement list with checkboxes -->
+  <div id="statements-container" class="hidden">
+    <div class="list-header">
+      <label class="check-all">
+        <input type="checkbox" id="check-all" checked>
+        <span>Select All</span>
+      </label>
+      <span id="selected-count" class="selected-count">0 selected</span>
+    </div>
+    <div id="statement-list" class="statement-list"></div>
+  </div>
+
+  <!-- actions -->
+  <div id="actions" class="hidden">
+    <button id="download-btn" class="btn-primary">
+      <span class="btn-icon">↓</span>
+      Download Selected
+    </button>
+    <button id="scan-btn" class="btn-secondary">
+      <span class="btn-icon">↻</span>
+      Re-scan Page
+    </button>
+  </div>
+
+  <!-- progress section -->
+  <div id="progress-section" class="hidden">
+    <div class="progress-bar-container">
+      <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
+    </div>
+    <div id="progress-text" class="progress-text">Downloading...</div>
+  </div>
+
+  <!-- status log -->
+  <div id="log-container" class="hidden">
+    <div class="log-header">Download Log</div>
+    <div id="log" class="log"></div>
+  </div>
+
+  <!-- not on bank site message -->
+  <div id="no-bank" class="hidden">
+    <div class="no-bank-icon">🏦</div>
+    <p class="no-bank-text">Not on a supported bank site</p>
+    <p class="no-bank-sub">Navigate to one of your bank's statement pages, then click this extension.</p>
+  </div>
+
+  <!-- quick links -->
+  <div id="quick-links">
+    <div class="links-header">Quick Links</div>
+    <div class="links-grid">
+      <a href="#" data-url="https://myaccounts.capitalone.com" class="bank-link">Capital One</a>
+      <a href="#" data-url="https://www.americanexpress.com/en-us/account/login" class="bank-link">AMEX</a>
+      <a href="#" data-url="https://www.sofi.com/login" class="bank-link">SoFi</a>
+      <a href="#" data-url="https://member.chime.com" class="bank-link">Chime</a>
+      <a href="#" data-url="https://www.empower.com/login" class="bank-link">Empower</a>
+      <a href="#" data-url="https://www.creditonebank.com/login" class="bank-link">Credit One</a>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
