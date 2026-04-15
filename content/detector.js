@@ -238,15 +238,14 @@
       const scraper = scrapers[bank.folder];
       if (scraper && typeof scraper.clickDownloadBulk === "function") {
         const items = msg.items || [];
-        const labels = items.map(s => `${s.accountName} statement ${s.date}`);
         let completed = 0;
-        scraper.clickDownloadBulk(labels, (clickedLabel) => {
+        scraper.clickDownloadBulk(items, (clickedLabel) => {
           completed++;
           chrome.runtime.sendMessage({
             action: "downloadProgress",
             completed,
             total: items.length,
-            filename: clickedLabel.substring(0, 60),
+            filename: (clickedLabel || "").substring(0, 60),
           }).catch(() => {});
         }).then((total) => {
           chrome.runtime.sendMessage({

@@ -9,164 +9,261 @@
     jun: "06", jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
   };
 
-  function extractDate(text) {
-    if (!text) return null;
-    const s = text.trim();
+  function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+  }
 
-    // "January 15, 2026" or "Jan 15, 2026"
-    let m = s.match(/(\w{3,9})\s+(\d{1,2}),?\s+(\d{4})/i);
-    if (m) {
-      const mo = MONTHS[m[1].toLowerCase()];
-      if (mo) return `${m[3]}-${mo}`;
+  function getButtonLabel(btn) {
+    return btn.getAttribute("aria-label")
+      || btn.getAttribute("title")
+      || btn.innerText?.trim()
+      || btn.textContent?.trim()
+      || "";
+  }
+
+  // Extract account name from the statement dialog heading
+  function getAccountName() {
+    // Look for headings like "Auto Loan" or "Platinum Card"
+    const headings = document.querySelectorAll("h2, h1, h3");
+    for (const h of headings) {
+      const text = h.textContent.trim();
+      if (/auto\s*loan|credit\s*card|platinum|venture|quicksilver|savor|spark/i.test(text)) {
+        return text;
+      }
     }
+    // Look for text near the dialog like "Auto Loan0957"
+    const allText = document.body.innerText || "";
+    const m = allText.match(/(Auto\s*Loan\d*|Platinum\s*Card\d*|Venture\s*\w*\d*|Quicksilver\s*\w*\d*|Savor\s*\w*\d*)/i);
+    if (m) return m[1].trim();
 
-    // "01/15/2026" or "1/15/26"
-    m = s.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
-    if (m) {
-      const yr = m[3].length === 2 ? "20" + m[3] : m[3];
-      return `${yr}-${m[1].padStart(2, "0")}`;
+    // Check URL for clues
+    const url = window.location.href;
+    if (/AutoLoan/i.test(url)) return "Auto Loan";
+    if (/Card/i.test(url)) return "Credit Card";
+
+    return "Capital One Account";
+  }
+
+  // Find the statement picker open/close button
+  function findPickerButton() {
+    for (const btn of document.querySelectorAll("button")) {
+      const label = getButtonLabel(btn).toLowerCase();
+      if (label.includes("open statement picker") || label.includes("statement picker")) {
+        return btn;
+      }
     }
-
-    // "2026-01"
-    m = s.match(/(\d{4})-(\d{2})/);
-    if (m) return `${m[1]}-${m[2]}`;
-
-    // "January 2026"
-    m = s.match(/(\w{3,9})\s+(\d{4})/i);
-    if (m) {
-      const mo = MONTHS[m[1].toLowerCase()];
-      if (mo) return `${m[2]}-${mo}`;
-    }
-
     return null;
   }
 
-  function getAccountName() {
-    // Capital One shows account name in breadcrumbs, headers, or tab labels
-    const selectors = [
-      '[data-testid="account-name"]',
-      '[data-testid="accountName"]',
-      ".account-name",
-      ".account-header h1",
-      ".account-header h2",
-      'nav[aria-label="Account"] .active',
-      ".breadcrumb .current",
-      '[class*="AccountName"]',
-      '[class*="account-title"]',
-    ];
-    for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el) {
-        const t = el.textContent.trim();
-        if (t) return t;
+  // Find the Download button
+  function findDownloadButton() {
+    for (const btn of document.querySelectorAll("button, a")) {
+      const label = getButtonLabel(btn).toLowerCase();
+      if (label === "download") return btn;
+    }
+    return null;
+  }
+
+  // Find Previous Year button
+  function findPrevYearButton() {
+    for (const btn of document.querySelectorAll("button")) {
+      const label = getButtonLabel(btn).toLowerCase();
+      if (label === "previous year" || label === "prev year") {
+        if (!btn.disabled && btn.getAttribute("aria-disabled") !== "true") return btn;
       }
     }
-    // Try the page title as last resort
-    const title = document.title || "";
-    const titleMatch = title.match(/^(.+?)[\s\-|]+Capital One/i);
-    if (titleMatch) return titleMatch[1].trim();
-    return "Capital One Account";
+    return null;
+  }
+
+  // Scan the currently visible year in the picker for available statement months
+  // Available months have names like "January 7, 2026" (with a day number)
+  // Future/empty months are just "May 2026" (no day)
+  function scanPickerMonths(seen) {
+    const statements = [];
+    document.querySelectorAll("button").forEach(btn => {
+      const label = getButtonLabel(btn);
+      // Match "Month Day, Year" pattern (e.g. "January 7, 2026", "March 7, 2026")
+      const m = label.match(/^(\w+)\s+(\d{1,2}),?\s+(\d{4})$/);
+      if (!m) return;
+
+      const monthName = m[1].toLowerCase();
+      const mo = MONTHS[monthName];
+      if (!mo) return;
+
+      const year = m[3];
+      const date = `${year}-${mo}`;
+      if (seen.has(date)) return;
+      seen.add(date);
+
+      statements.push({
+        date,
+        pickerLabel: label,
+        format: "pdf",
+        clickDownload: true,
+      });
+    });
+    return statements;
   }
 
   const scraper = {
     findStatements: async () => {
-      const statements = [];
-      const seen = new Set();
       const accountName = getAccountName();
+      const seen = new Set();
+      let allStatements = [];
 
-      // Strategy 1: Direct PDF links in statement list items
-      // Capital One often uses a list of statement rows with embedded <a> tags to PDFs
-      document.querySelectorAll([
-        'a[href*="statement"][href*=".pdf"]',
-        'a[href*="/statements/"][href*=".pdf"]',
-        'a[href*="document"][href*=".pdf"]',
-        'a[href*="/documents/"]',
-        'a[data-testid*="statement"]',
-        'a[data-testid*="download"]',
-      ].join(", ")).forEach(a => {
-        const url = a.href;
-        if (!url || seen.has(url)) return;
-        seen.add(url);
-        const text = (a.textContent || "").trim() + " " + (a.getAttribute("aria-label") || "");
-        const date = extractDate(text) || extractDate(url) || "unknown";
-        statements.push({
-          url, date, accountName,
-          format: /\.pdf/i.test(url) ? "pdf" : "pdf",
-          label: text.substring(0, 80).trim(),
-        });
-      });
+      try {
+        // Open the statement picker
+        const pickerBtn = findPickerButton();
+        if (pickerBtn) {
+          const isExpanded = pickerBtn.getAttribute("aria-expanded") === "true";
+          if (!isExpanded) {
+            pickerBtn.click();
+            await sleep(800);
+          }
+        }
 
-      // Strategy 2: Statement rows in a table or card layout
-      // Capital One wraps statements in list items or table rows
-      document.querySelectorAll([
-        '[data-testid*="statement-row"]',
-        '[data-testid*="statementRow"]',
-        '[class*="statement-row"]',
-        '[class*="StatementRow"]',
-        'li[class*="statement"]',
-        'tr[class*="statement"]',
-        '[class*="document-row"]',
-        '[role="listitem"][class*="statement"]',
-      ].join(", ")).forEach(row => {
-        const link = row.querySelector('a[href]') || row.querySelector('button[data-href]');
-        if (!link) return;
-        const url = link.href || link.getAttribute("data-href") || "";
-        if (!url || seen.has(url)) return;
-        seen.add(url);
-        const rowText = (row.textContent || "").trim();
-        const date = extractDate(rowText) || "unknown";
-        statements.push({
-          url, date, accountName, format: "pdf",
-          label: rowText.substring(0, 80),
-        });
-      });
+        // Scan current year
+        allStatements = allStatements.concat(scanPickerMonths(seen));
 
-      // Strategy 3: Buttons that trigger statement downloads via data attributes
-      document.querySelectorAll([
-        'button[data-testid*="download"]',
-        'button[data-testid*="statement"]',
-        'button[aria-label*="Download"]',
-        'button[aria-label*="statement"]',
-        '[role="button"][data-url]',
-        '[role="button"][data-href]',
-      ].join(", ")).forEach(btn => {
-        const url = btn.getAttribute("data-url") || btn.getAttribute("data-href") || "";
-        if (!url || seen.has(url)) return;
-        seen.add(url);
-        const text = (btn.textContent || "").trim() + " " + (btn.getAttribute("aria-label") || "");
-        statements.push({
-          url, date: extractDate(text) || "unknown", accountName, format: "pdf",
-          label: text.substring(0, 80).trim(),
-        });
-      });
+        // Navigate to previous years and scan those
+        let yearAttempts = 0;
+        while (yearAttempts < 10) {
+          const prevBtn = findPrevYearButton();
+          if (!prevBtn) break;
 
-      // Strategy 4: Walk all links inside containers that look like statement sections
-      const sectionSelectors = [
-        '[data-testid="statements-section"]',
-        '[data-testid="documents-section"]',
-        '#statements', '#documents',
-        'section[aria-label*="Statement"]',
-        'section[aria-label*="Document"]',
-        '[class*="statements-container"]',
-        '[class*="StatementsContainer"]',
-      ];
-      for (const sel of sectionSelectors) {
-        const section = document.querySelector(sel);
-        if (!section) continue;
-        section.querySelectorAll("a[href]").forEach(a => {
-          const url = a.href;
-          if (!url || seen.has(url)) return;
-          seen.add(url);
-          const text = a.closest("li, tr, [role='listitem'], [class*='row']")?.textContent || a.textContent || "";
-          statements.push({
-            url, date: extractDate(text) || "unknown", accountName,
-            format: /\.pdf/i.test(url) ? "pdf" : "pdf",
-            label: text.trim().substring(0, 80),
-          });
-        });
+          prevBtn.click();
+          await sleep(800);
+
+          const found = scanPickerMonths(seen);
+          if (found.length === 0) break; // no statements in this year
+          allStatements = allStatements.concat(found);
+          yearAttempts++;
+        }
+
+        // Close the picker
+        if (pickerBtn) {
+          const isExpanded = pickerBtn.getAttribute("aria-expanded") === "true";
+          if (isExpanded) {
+            pickerBtn.click();
+            await sleep(300);
+          }
+        }
+      } catch (e) {
+        console.error("Statement Grabber: Capital One scan error", e);
       }
 
-      return statements;
+      // Tag all statements with the account name
+      allStatements.forEach(s => {
+        s.accountName = accountName;
+        s.label = `${accountName} ${s.date}`;
+      });
+
+      return allStatements;
+    },
+
+    // Download statements by cycling through the picker:
+    // select month → click Download → wait → next month
+    clickDownloadBulk: async (items, progressCallback) => {
+      const wanted = new Map();
+      for (const item of items) {
+        wanted.set(item.date, item);
+      }
+      if (wanted.size === 0) return 0;
+
+      let totalClicked = 0;
+
+      try {
+        // Open the picker
+        const pickerBtn = findPickerButton();
+        if (pickerBtn) {
+          const isExpanded = pickerBtn.getAttribute("aria-expanded") === "true";
+          if (!isExpanded) {
+            pickerBtn.click();
+            await sleep(800);
+          }
+        }
+
+        // Navigate to the earliest year first by clicking Previous Year
+        let prevBtn = findPrevYearButton();
+        while (prevBtn) {
+          prevBtn.click();
+          await sleep(600);
+          prevBtn = findPrevYearButton();
+        }
+
+        // Now walk forward year by year, clicking matching months
+        let yearPasses = 0;
+        while (wanted.size > 0 && yearPasses < 15) {
+          // Click all matching months in this year
+          const monthButtons = [];
+          document.querySelectorAll("button").forEach(btn => {
+            const label = getButtonLabel(btn);
+            const m = label.match(/^(\w+)\s+(\d{1,2}),?\s+(\d{4})$/);
+            if (!m) return;
+            const mo = MONTHS[m[1].toLowerCase()];
+            if (!mo) return;
+            const date = `${m[3]}-${mo}`;
+            if (wanted.has(date)) {
+              monthButtons.push({ btn, date, label });
+            }
+          });
+
+          for (const { btn, date, label } of monthButtons) {
+            // Click the month in the picker
+            btn.click();
+            await sleep(1500);
+
+            // Close picker so Download button is accessible
+            const pickerToggle = findPickerButton();
+            if (pickerToggle && pickerToggle.getAttribute("aria-expanded") === "true") {
+              pickerToggle.click();
+              await sleep(500);
+            }
+
+            // Click Download
+            const dlBtn = findDownloadButton();
+            if (dlBtn) {
+              dlBtn.click();
+              totalClicked++;
+              wanted.delete(date);
+              if (progressCallback) progressCallback(label);
+              await sleep(2500);
+            }
+
+            // Re-open picker for next month
+            if (pickerToggle && pickerToggle.getAttribute("aria-expanded") !== "true") {
+              pickerToggle.click();
+              await sleep(800);
+            }
+          }
+
+          // Go to next year
+          let nextYearBtn = null;
+          for (const btn of document.querySelectorAll("button")) {
+            const label = getButtonLabel(btn).toLowerCase();
+            if (label === "next year") {
+              if (!btn.disabled && btn.getAttribute("aria-disabled") !== "true") {
+                nextYearBtn = btn;
+              }
+            }
+          }
+          if (!nextYearBtn) break;
+          nextYearBtn.click();
+          await sleep(600);
+          yearPasses++;
+        }
+
+        // Close picker
+        const pickerToggle = findPickerButton();
+        if (pickerToggle && pickerToggle.getAttribute("aria-expanded") === "true") {
+          pickerToggle.click();
+        }
+      } catch (e) {
+        console.error("Statement Grabber: Capital One download error", e);
+      }
+
+      await sleep(5000);
+      return totalClicked;
     },
   };
 

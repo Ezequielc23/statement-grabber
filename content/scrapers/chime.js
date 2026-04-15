@@ -203,18 +203,11 @@
     },
 
     // Bulk download: navigate through all pages clicking matching buttons
-    clickDownloadBulk: async (buttonLabels, progressCallback) => {
-      // Build a set of {accountName, date} pairs to download
+    clickDownloadBulk: async (items, progressCallback) => {
       const wanted = new Map();
-      for (const lbl of buttonLabels) {
-        // Parse from the label we stored: "Checking statement 2026-03" format
-        // Or from the buttonLabel/rowText
-        const dateMatch = lbl.match(/(\d{4}-\d{2})/);
-        const acctMatch = lbl.match(/(Checking|Savings|Credit)/i);
-        if (dateMatch && acctMatch) {
-          const key = `${acctMatch[1]}_${dateMatch[1]}`;
-          wanted.set(key, { accountName: acctMatch[1], date: dateMatch[1], label: lbl });
-        }
+      for (const item of items) {
+        const key = `${item.accountName}_${item.date}`;
+        wanted.set(key, item);
       }
 
       if (wanted.size === 0) return 0;
